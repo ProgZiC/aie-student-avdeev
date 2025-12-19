@@ -92,7 +92,18 @@ def report(
     out_dir: str = typer.Option("reports", help="Каталог для отчёта."),
     sep: str = typer.Option(",", help="Разделитель в CSV."),
     encoding: str = typer.Option("utf-8", help="Кодировка файла."),
-    max_hist_columns: int = typer.Option(6, help="Максимум числовых колонок для гистограмм."),
+    max_hist_columns: int = typer.Option(
+        6, 
+        help="Максимум числовых колонок для гистограмм."
+    ),
+    top_k_categories: int = typer.Option(
+        5,
+        help="Сколько top-значений выводить для категориальных признаков."
+    ),
+    min_missing_share: float = typer.Option(
+        0.3,
+        help="Порог доли пропусков, выше которого колонка считается проблемной."
+    ),
 ) -> None:
     """
     Сгенерировать полный EDA-отчёт:
@@ -117,6 +128,16 @@ def report(
     # 2. Качество в целом
     quality_flags = compute_quality_flags(summary, missing_df)
 
+    # Находим проблемные колонки по пропускам
+    problematic_columns = []
+    for col in summary.columns:
+        if col.missing_share > min_missing_share:
+            problematic_columns.append({
+                "name": col.name,
+                "missing_share": col.missing_share,
+                "missing_count": col.missing,
+            })
+
     # 3. Сохраняем табличные артефакты
     summary_df.to_csv(out_root / "summary.csv", index=False)
     if not missing_df.empty:
@@ -138,6 +159,33 @@ def report(
         f.write(f"- Слишком мало строк: **{quality_flags['too_few_rows']}**\n")
         f.write(f"- Слишком много колонок: **{quality_flags['too_many_columns']}**\n")
         f.write(f"- Слишком много пропусков: **{quality_flags['too_many_missing']}**\n\n")
+# Новые эвристики
+        f.write("### Новые эвристики качества\n\n")
+        
+        f.write(f"1. **Константные колонки**: {quality_flags['has_constant_columns']}\n")
+        if quality_flags['has_constant_columns']:
+            f.write(f"   - Колонки: {', '.join(quality_flags['constant_columns'])}\n")
+            f.write(f"   - Количество: {quality_flags['n_constant_columns']}\n")
+        
+        f.write(f"\n2. **Высокая кардинальность категориальных признаков** (>50 уникальных значений): "
+                f"{quality_flags['has_high_cardinality_categoricals']}\n")
+        if quality_flags['has_high_cardinality_categoricals']:
+            f.write(f"   - Колонки: {', '.join(quality_flags['high_cardinality_columns'])}\n")
+            f.write(f"   - Количество: {quality_flags['n_high_cardinality_columns']}\n")
+        
+        f.write(f"\n3. **Подозрительные дубликаты ID**: {quality_flags['has_suspicious_id_duplicates']}\n")
+        if quality_flags['has_suspicious_id_duplicates']:
+            for id_col in quality_flags['suspicious_id_columns']:
+                f.write(f"   - {id_col['description']} (дубликатов: {id_col['duplicate_ratio']:.1%})\n")
+
+        # Раздел с проблемными колонками по пропускам
+        if problematic_columns:
+            f.write(f"\n## Колонки с пропусками > {min_missing_share:.0%}\n\n")
+            f.write("| Колонка | Пропуски | Доля пропусков |\n")
+            f.write("|---------|----------|----------------|\n")
+            for pc in problematic_columns:
+                f.write(f"| {pc['name']} | {pc['missing_count']} | {pc['missing_share']:.2%} |\n")
+            f.write("\n")
 
         f.write("## Колонки\n\n")
         f.write("См. файл `summary.csv`.\n\n")
@@ -158,9 +206,10 @@ def report(
         if not top_cats:
             f.write("Категориальные/строковые признаки не найдены.\n\n")
         else:
-            f.write("См. файлы в папке `top_categories/`.\n\n")
+            f.write(f"Топ-{top_k_categories} значений по категориальным признакам см. в папке `top_categories/`.\n\n")
 
         f.write("## Гистограммы числовых колонок\n\n")
+        f.write(f"Построено гистограмм для первых {max_hist_columns} числовых колонок.\n")
         f.write("См. файлы `hist_*.png`.\n")
         
     # 5. Картинки
@@ -172,6 +221,11 @@ def report(
     typer.echo(f"- Основной markdown: {md_path}")
     typer.echo("- Табличные файлы: summary.csv, missing.csv, correlation.csv, top_categories/*.csv")
     typer.echo("- Графики: hist_*.png, missing_matrix.png, correlation_heatmap.png")
+    typer.echo(f"\nНовые эвристики качества данных:")
+    typer.echo(f"- Константные колонки: {quality_flags['has_constant_columns']}")
+    typer.echo(f"- Высокая кардинальность категориальных: {quality_flags['has_high_cardinality_categoricals']}")
+    typer.echo(f"- Подозрительные дубликаты ID: {quality_flags['has_suspicious_id_duplicates']}")
+
 
 
 if __name__ == "__main__":

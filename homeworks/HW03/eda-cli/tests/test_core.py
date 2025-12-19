@@ -59,3 +59,104 @@ def test_correlation_and_top_categories():
     city_table = top_cats["city"]
     assert "value" in city_table.columns
     assert len(city_table) <= 2
+
+# ТЕСТЫ ДЛЯ ТРЕХ НОВЫХ ЭВРИСТИК
+
+def test_constant_columns_heuristic():
+    """Тест для эвристики константных колонок."""
+    df = pd.DataFrame({
+        'id': [1, 2, 3, 4, 5],
+        'constant_col': [10, 10, 10, 10, 10],  # Все значения одинаковые
+        'normal_col': [1, 2, 3, 4, 5],
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_constant_columns'] == True
+    assert flags['n_constant_columns'] == 1
+    assert 'constant_col' in flags['constant_columns']
+
+
+def test_no_constant_columns():
+    """Тест, когда константных колонок нет."""
+    df = pd.DataFrame({
+        'col1': [1, 2, 3, 4],
+        'col2': ['a', 'b', 'c', 'd'],
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_constant_columns'] == False
+    assert flags['n_constant_columns'] == 0
+
+
+
+    
+
+
+def test_low_cardinality_categoricals():
+    """Тест, когда нет высокой кардинальности."""
+    df = pd.DataFrame({
+        'id': range(10),
+        'category': ['A', 'B'] * 5,  # 2 уникальных значения
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_high_cardinality_categoricals'] == False
+    assert flags['n_high_cardinality_columns'] == 0
+
+
+def test_suspicious_id_duplicates():
+    """Тест для эвристики дубликатов ID."""
+    df = pd.DataFrame({
+        'user_id': [1, 2, 3, 1, 2],  # Дубликаты
+        'value': [10, 20, 30, 40, 50],
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_suspicious_id_duplicates'] == True
+    assert len(flags['suspicious_id_columns']) == 1
+    assert flags['suspicious_id_columns'][0]['column'] == 'user_id'
+    assert flags['suspicious_id_columns'][0]['duplicate_ratio'] > 0
+
+
+def test_unique_id_no_duplicates():
+    """Тест, когда ID уникальны."""
+    df = pd.DataFrame({
+        'user_id': [1, 2, 3, 4, 5],  # Все уникальны
+        'data': [10, 20, 30, 40, 50],
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_suspicious_id_duplicates'] == False
+    assert len(flags['suspicious_id_columns']) == 0
+
+
+def test_id_like_column_not_id():
+    """Тест для колонки, похожей на ID, но не являющейся идентификатором."""
+    df = pd.DataFrame({
+        'guid_id_column': [100, 200, 300, 100, 200],  # Похоже на ID, но дублируется
+        'value': [10, 20, 30, 40, 50],
+    })
+    
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags = compute_quality_flags(summary, missing_df)
+    
+    assert flags['has_suspicious_id_duplicates'] == True
+    assert len(flags['suspicious_id_columns']) == 1
+
+

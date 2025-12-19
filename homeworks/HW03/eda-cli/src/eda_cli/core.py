@@ -240,7 +240,6 @@ def compute_quality_flags(summary: DatasetSummary, missing_df: pd.DataFrame) -> 
         score -= 0.1
 
     if flags["has_suspicious_id_duplicates"]:
-            
             score -= 0.25
 
 
