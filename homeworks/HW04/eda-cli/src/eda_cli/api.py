@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 
 from .core import compute_quality_flags, missing_table, summarize_dataset
 
+
+from typing import Dict, Any
+import json
+
 app = FastAPI(
     title="AIE Dataset Quality API",
     version="0.2.0",
@@ -76,7 +80,36 @@ class QualityResponse(BaseModel):
         default=None,
         description="Размеры датасета: {'n_rows': ..., 'n_cols': ...}, если известны",
     )
+class QualityFlagsResponse(BaseModel):
+    """Ответ с полным набором флагов качества."""
 
+    flags: Dict[str, bool] = Field(
+        ...,
+        description="Полный набор булевых флагов качества датасета"
+    )
+    dataset_shape: Dict[str, int] = Field(
+        ...,
+        description="Размеры датасета: {'n_rows': ..., 'n_cols': ...}"
+    )
+    latency_ms: float = Field(
+        ...,
+        ge=0.0,
+        description="Время обработки запроса на сервере, миллисекунды",
+    )
+
+
+class DatasetSummaryResponse(BaseModel):
+    """Ответ с JSON-сводкой о датасете."""
+
+    summary: Dict[str, Any] = Field(
+        ...,
+        description="Полная JSON-сводка о датасете"
+    )
+    latency_ms: float = Field(
+        ...,
+        ge=0.0,
+        description="Время обработки запроса на сервере, миллисекунды",
+    )
 
 # ---------- Системный эндпоинт ----------
 
@@ -241,4 +274,128 @@ async def quality_from_csv(file: UploadFile = File(...)) -> QualityResponse:
         latency_ms=latency_ms,
         flags=flags_bool,
         dataset_shape={"n_rows": n_rows, "n_cols": n_cols},
+    )
+
+# ---------- /quality-flags-from-csv: полный набор флагов качества ----------
+
+
+@app.post(
+    "/quality-flags-from-csv",
+    response_model=QualityFlagsResponse,
+    tags=["quality"],
+    summary="Полный набор флагов качества по CSV-файлу",
+)
+async def quality_flags_from_csv(file: UploadFile = File(...)) -> QualityFlagsResponse:
+    """
+    Эндпоинт, который принимает CSV-файл и возвращает полный набор флагов качества,
+    включая все эвристики из HW03.
+    """
+    start = perf_counter()
+
+    if file.content_type not in ("text/csv", "application/vnd.ms-excel", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="Ожидается CSV-файл (content-type text/csv).")
+
+    try:
+        df = pd.read_csv(file.file)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не удалось прочитать CSV: {exc}")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="CSV-файл не содержит данных (пустой DataFrame).")
+
+    # Используем EDA-ядро
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags_all = compute_quality_flags(summary, missing_df)
+
+    latency_ms = (perf_counter() - start) * 1000.0
+
+    # Извлекаем только булевы флаги
+    flags_bool: dict[str, bool] = {
+        key: bool(value)
+        for key, value in flags_all.items()
+        if isinstance(value, bool)
+    }
+
+    # Размеры датасета
+    try:
+        n_rows = int(getattr(summary, "n_rows"))
+        n_cols = int(getattr(summary, "n_cols"))
+    except AttributeError:
+        n_rows = int(df.shape[0])
+        n_cols = int(df.shape[1])
+
+    print(
+        f"[quality-flags-from-csv] filename={file.filename!r} "
+        f"n_rows={n_rows} n_cols={n_cols} num_flags={len(flags_bool)} "
+        f"latency_ms={latency_ms:.1f} ms"
+    )
+
+    return QualityFlagsResponse(
+        flags=flags_bool,
+        dataset_shape={"n_rows": n_rows, "n_cols": n_cols},
+        latency_ms=latency_ms,
+    )
+
+
+# ---------- /summary-from-csv: JSON-сводка о датасете  ----------
+
+
+@app.post(
+    "/summary-from-csv",
+    response_model=DatasetSummaryResponse,
+    tags=["dataset"],
+    summary="JSON-сводка о датасете",
+)
+async def summary_from_csv(file: UploadFile = File(...)) -> DatasetSummaryResponse:
+    """
+    Эндпоинт, который принимает CSV-файл и возвращает JSON-сводку о датасете.
+    """
+    start = perf_counter()
+
+    if file.content_type not in ("text/csv", "application/vnd.ms-excel", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="Ожидается CSV-файл (content-type text/csv).")
+
+    try:
+        df = pd.read_csv(file.file)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не удалось прочитать CSV: {exc}")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="CSV-файл не содержит данных (пустой DataFrame).")
+
+    # Используем EDA-ядро для получения сводки
+    summary = summarize_dataset(df)
+    missing_df = missing_table(df)
+    flags_all = compute_quality_flags(summary, missing_df)
+
+    latency_ms = (perf_counter() - start) * 1000.0
+
+    # Конвертируем сводку в словарь
+    summary_dict = {}
+    
+    # Добавляем базовую информацию
+    summary_dict["shape"] = {"n_rows": df.shape[0], "n_cols": df.shape[1]}
+    
+    # Добавляем атрибуты из summary, если они есть
+    if hasattr(summary, "__dict__"):
+        summary_dict.update(summary.__dict__)
+    
+    # Добавляем информацию о пропусках
+    if not missing_df.empty:
+        missing_info = missing_df.to_dict(orient="records")
+        summary_dict["missing_info"] = missing_info
+    
+    # Добавляем все флаги качества
+    summary_dict["quality_flags"] = flags_all
+
+    print(
+        f"[summary-from-csv] filename={file.filename!r} "
+        f"n_rows={df.shape[0]} n_cols={df.shape[1]} "
+        f"latency_ms={latency_ms:.1f} ms"
+    )
+
+    return DatasetSummaryResponse(
+        summary=summary_dict,
+        latency_ms=latency_ms,
     )
